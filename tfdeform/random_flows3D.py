@@ -1,91 +1,128 @@
 import tensorflow as tf
-from tensorflow.python.ops import array_ops, math_ops
 import numpy as np
-from tfdeform.deform_util import dense_image_warp
-from tfdeform.convolve import gausssmooth
+from tfdeform.deform_util3D import dense_image_warp
+from tfdeform.convolve3D import gausssmooth
 
 
 __all__ = ('random_deformation_linear',
            'random_deformation_momentum',
-		   'random_deformation_momentum_sequence')
-
+		   'random_deformation_momentum_sequence',
+           'batch_random_deformation_momentum_sequence')
 
 def image_gradients(image, mode='forward'):
     """Compute gradients of image."""
-    if image.shape.ndims != 4:
+    if image.shape.ndims != 5:
         raise ValueError('image_gradients expects a 4D tensor '
-                     '[batch_size, h, w, d], not %s.', image.shape)
-    image_shape = array_ops.shape(image)
-    batch_size, height, width, depth = array_ops.unstack(image_shape)
-    dy = image[:, 1:, :, :] - image[:, :-1, :, :]
-    dx = image[:, :, 1:, :] - image[:, :, :-1, :]
+                     '[batch_size, d, h, w, dim], not %s.', image.shape)
+    image_shape = tf.shape(image)
+    batch_size, depth, height, width, dim = tf.unstack(image_shape)
+    dz = image[:, 1:, :, :, :] - image[:, :-1, :, :, :]
+    dy = image[:, :, 1:, :, :] - image[:, :, :-1, :, :]
+    dx = image[:, :, :, 1:, :] - image[:, :, :, :-1, :]
 
     if mode == 'forward':
         # Return tensors with same size as original image by concatenating
-        # zeros. Place the gradient [I(x+1,y) - I(x,y)] on the base pixel (x, y).
-        shape = array_ops.stack([batch_size, 1, width, depth])
-        dy = array_ops.concat([dy, array_ops.zeros(shape, image.dtype)], 1)
-        dy = array_ops.reshape(dy, image_shape)
+        # zeros. Place the gradient [I(x+1,y,z) - I(x,y,z)] on the base pixel (x, y, z).
+        shape = tf.stack([batch_size, 1, height, width, dim])
+        dz = tf.concat([dz, tf.zeros(shape, image.dtype)], 1)
+        dz = tf.reshape(dz, image_shape)
+        
+        shape = tf.stack([batch_size, depth, 1, width, dim])
+        dy = tf.concat([dy, tf.zeros(shape, image.dtype)], 2)
+        dy = tf.reshape(dy, image_shape)
 
-        shape = array_ops.stack([batch_size, height, 1, depth])
-        dx = array_ops.concat([dx, array_ops.zeros(shape, image.dtype)], 2)
-        dx = array_ops.reshape(dx, image_shape)
+        shape = tf.stack([batch_size, depth, height, 1, dim])
+        dx = tf.concat([dx, tf.zeros(shape, image.dtype)], 3)
+        dx = tf.reshape(dx, image_shape)
     else:
         # Return tensors with same size as original image by concatenating
-        # zeros. Place the gradient [I(x+1,y) - I(x,y)] on the base pixel (x, y).
-        shape = array_ops.stack([batch_size, 1, width, depth])
-        dy = array_ops.concat([array_ops.zeros(shape, image.dtype), dy], 1)
-        dy = array_ops.reshape(dy, image_shape)
+        # zeros. Place the gradient [I(x+1,y,z) - I(x,y,z)] on the base pixel (x, y, z).
+        shape = tf.stack([batch_size, 1, height, width, dim])
+        dz = tf.concat([tf.zeros(shape, image.dtype), dz], 1)
+        dz = tf.reshape(dz, image_shape)
+        
+        shape = tf.stack([batch_size, depth, 1, width, dim])
+        dy = tf.concat([tf.zeros(shape, image.dtype), dy], 2)
+        dy = tf.reshape(dy, image_shape)
 
-        shape = array_ops.stack([batch_size, height, 1, depth])
-        dx = array_ops.concat([array_ops.zeros(shape, image.dtype), dx], 2)
-        dx = array_ops.reshape(dx, image_shape)
+        shape = tf.stack([batch_size, depth, height, 1, dim])
+        dx = tf.concat([tf.zeros(shape, image.dtype), dx], 3)
+        dx = tf.reshape(dx, image_shape)
 
-    return dy, dx
+    return dz, dy, dx
 
 def jacobian(vf):
     """Compute the jacobian of a vectorfield pointwise."""
-    vf0_dy, vf0_dx = image_gradients(vf[..., 0:1])
-    vf1_dy, vf1_dx = image_gradients(vf[..., 1:2])
+    vf0_dz, vf0_dy, vf0_dx = image_gradients(vf[..., 0:1])
+    vf1_dz, vf1_dy, vf1_dx = image_gradients(vf[..., 1:2])
+    vf2_dz, vf2_dy, vf2_dx = image_gradients(vf[..., 2:3])
 
-    r1 = tf.concat([vf0_dy[..., None], vf0_dx[..., None]], axis=-1)
-    r2 = tf.concat([vf1_dy[..., None], vf1_dx[..., None]], axis=-1)
+    r1 = tf.concat([vf0_dz[..., None], vf0_dy[..., None], vf0_dx[..., None]], axis=-1)
+    r2 = tf.concat([vf1_dz[..., None], vf1_dy[..., None], vf1_dx[..., None]], axis=-1)
+    r3 = tf.concat([vf2_dz[..., None], vf2_dy[..., None], vf2_dx[..., None]], axis=-1)
 
-    return tf.concat([r1, r2], axis=-2)
+    return tf.concat([r1, r2, r3], axis=-2)
 
 def matmul(mat, vec):
     """Compute matrix @ vec pointwise."""
     c11 = mat[..., 0, 0:1] * vec[..., 0:1]
     c12 = mat[..., 0, 1:2] * vec[..., 1:2]
+    c13 = mat[..., 0, 2:3] * vec[..., 2:3]
+    
     c21 = mat[..., 1, 0:1] * vec[..., 0:1]
     c22 = mat[..., 1, 1:2] * vec[..., 1:2]
-
-    return tf.concat([c11 + c12, c21 + c22],
-                     axis=-1)
+    c23 = mat[..., 1, 2:3] * vec[..., 2:3]
+    
+    c31 = mat[..., 2, 0:1] * vec[..., 0:1]
+    c32 = mat[..., 2, 1:2] * vec[..., 1:2]
+    c33 = mat[..., 2, 2:3] * vec[..., 2:3]
+    
+    return tf.concat([c11 + c12 + c13, c21 + c22 + c23, c31 + c32 + c33], axis=-1)
 
 def matmul_transposed(mat, vec):
     """Compute matrix.T @ vec pointwise."""
     c11 = mat[..., 0, 0:1] * vec[..., 0:1]
     c12 = mat[..., 1, 0:1] * vec[..., 1:2]
+    c13 = mat[..., 2, 0:1] * vec[..., 2:3]
+    
     c21 = mat[..., 0, 1:2] * vec[..., 0:1]
     c22 = mat[..., 1, 1:2] * vec[..., 1:2]
-
-    return tf.concat([c11 + c12, c21 + c22],
-                     axis=-1)
+    c23 = mat[..., 2, 1:2] * vec[..., 2:3]
+    
+    c31 = mat[..., 0, 2:3] * vec[..., 0:1]
+    c32 = mat[..., 1, 2:3] * vec[..., 1:2]
+    c33 = mat[..., 2, 2:3] * vec[..., 2:3]
+    
+    return tf.concat([c11 + c12 + c13, c21 + c22 + c23, c31 + c32 + c33], axis=-1)
 
 def div(vf):
     """Compute divergence of vector field."""
-    dy, _ = image_gradients(vf[..., 0:1], mode='backward')
-    _, dx = image_gradients(vf[..., 1:2], mode='backward')
-    return dx + dy
+    dz, _, _ = image_gradients(vf[..., 0:1], mode='backward')
+    _, dy, _ = image_gradients(vf[..., 1:2], mode='backward')
+    _, _, dx = image_gradients(vf[..., 2:3], mode='backward')
+    return dx + dy + dz
+
+def init(shape):
+    assert len(shape) == 3
+    grid_x, grid_y, grid_z = tf.meshgrid(tf.range(shape[0]), tf.range(shape[1]), tf.range(shape[2]), indexing ='ij')
+    grid_x = tf.cast(grid_x[None, ..., None], 'float32')
+    grid_y = tf.cast(grid_y[None, ..., None], 'float32')
+    grid_z = tf.cast(grid_z[None, ..., None], 'float32')
+
+    base_coordinates = tf.concat([grid_x, grid_y, grid_z], axis=-1)
+    # Create mask to stop movement at edges
+    mask = (tf.cos((grid_x - shape[0] / 2 + 1) * np.pi / (shape[0] + 2)) *
+            tf.cos((grid_y - shape[1] / 2 + 1) * np.pi / (shape[1] + 2)) *
+            tf.cos((grid_z - shape[2] / 2 + 1) * np.pi / (shape[2] + 2))) ** (0.25)
+    return base_coordinates, mask
 
 def batch_random_deformation_momentum_sequence(shape, std, distance, stepsize=0.1):
     r"""Create sequences of random diffeomorphic deformations.
 
     Parameters
     ----------
-    shape : sequence of 3 ints
-        Batch, height and width.
+    shape : sequence of 4 ints
+        Batch, depth, height and width.
     std : float
         Correlation distance for the linear deformations.
     distance : float
@@ -93,7 +130,7 @@ def batch_random_deformation_momentum_sequence(shape, std, distance, stepsize=0.
     stepsize : float
         How large each step should be (as a propotion of ``std``).
     Returns:
-        Generated deformation field for each step (Batch, step, height, width)
+        Generated deformation field for each step (Batch, step, depth, height, width)
     Notes
     -----
     ``distance`` should typically not be more than a small fraction of the
@@ -103,7 +140,7 @@ def batch_random_deformation_momentum_sequence(shape, std, distance, stepsize=0.
 
     .. math::
         \frac{distance}{std * stepsize}
-    """
+    """ 
     batch_size = shape[0]
     i = tf.constant(0, dtype=tf.int32)
     flows = random_deformation_momentum_sequence(shape[1:], std, distance, stepsize)[None,...]
@@ -119,14 +156,14 @@ def batch_random_deformation_momentum_sequence(shape, std, distance, stepsize=0.
         cond, body, [i, flows],
         shape_invariants=[0,tf.TensorShape([batch_size, None, *shape[1:], 3])])
     return flows
-
+    
 def random_deformation_momentum_sequence(shape, std, distance, stepsize=0.1):
     r"""Create a sequence of random diffeomorphic deformations.
 
     Parameters
     ----------
-    shape : sequence of 2 ints
-        height and width.
+    shape : sequence of 3 ints
+        depth, height and width.
     std : float
         Correlation distance for the linear deformations.
     distance : float
@@ -134,7 +171,7 @@ def random_deformation_momentum_sequence(shape, std, distance, stepsize=0.1):
     stepsize : float
         How large each step should be (as a propotion of ``std``).
     Returns:
-        Generated deformation field for each step (step, height, width)
+        Generated deformation field for each step (step, depth, height, width)
     Notes
     -----
     ``distance`` should typically not be more than a small fraction of the
@@ -145,18 +182,9 @@ def random_deformation_momentum_sequence(shape, std, distance, stepsize=0.1):
     .. math::
         \frac{distance}{std * stepsize}
     """
-    assert len(shape) == 2
-    grid_x, grid_y = array_ops.meshgrid(math_ops.range(shape[1]),
-                                        math_ops.range(shape[0]))
-    grid_x = tf.cast(grid_x[None, ..., None], 'float32')
-    grid_y = tf.cast(grid_y[None, ..., None], 'float32')
-
-    base_coordinates = tf.concat([grid_y, grid_x], axis=-1)
+    assert len(shape) == 3
+    base_coordinates, mask  = init(shape)
     coordinates = tf.identity(base_coordinates)
-
-    # Create mask to stop movement at edges
-    mask = (tf.cos((grid_x - shape[2] / 2 + 1) * np.pi / (shape[2] + 2)) *
-            tf.cos((grid_y - shape[1] / 2 + 1) * np.pi / (shape[1] + 2))) ** (0.25)
 
     # Total distance is given by std * n_steps * dt, we use this
     # to work out the exact numbers.
@@ -167,7 +195,7 @@ def random_deformation_momentum_sequence(shape, std, distance, stepsize=0.1):
     C = np.sqrt(2 * np.pi) * std ** 2
 
     # Multiply by dt here to keep values small-ish for numerical purposes
-    momenta = dt * C * tf.random.normal(shape=[*shape, 2])
+    momenta = dt * C * tf.random.normal(shape=[1, *shape, 3])
 
     # Using a while loop, generate the deformation step-by-step.
     def cond(i, from_coordinates, momenta):
@@ -179,7 +207,7 @@ def random_deformation_momentum_sequence(shape, std, distance, stepsize=0.1):
         d1 = matmul_transposed(jacobian(momenta), v)
         d2 = matmul(jacobian(v), momenta)
         d3 = div(v) * momenta
-        f_c = from_coordinates[-1,...][None,...]
+        f_c = tf.identity(from_coordinates[-1,...][None,...])
         momenta = momenta - dt * (d1 + d2 + d3)
         v = dense_image_warp(v, f_c - base_coordinates)
         f_c = dense_image_warp(f_c, v)
@@ -189,7 +217,7 @@ def random_deformation_momentum_sequence(shape, std, distance, stepsize=0.1):
     i = tf.constant(0, dtype=tf.int32)
     i, from_coordinates, momenta = tf.while_loop(
         cond, body, [i, coordinates, momenta],
-		shape_invariants=[0,tf.TensorShape([None,shape[1], shape[2], 2]),0])
+        shape_invariants=[0,tf.TensorShape([None,*shape, 3]),0])
 
     from_total_offset = from_coordinates - base_coordinates
 
@@ -200,8 +228,8 @@ def random_deformation_momentum(shape, std, distance, stepsize=0.1):
 
     Parameters
     ----------
-    shape : sequence of 3 ints
-        Batch, height and width.
+    shape : sequence of 4 ints
+        Batch, depth, height and width.
     std : float
         Correlation distance for the linear deformations.
     distance : float
@@ -209,7 +237,7 @@ def random_deformation_momentum(shape, std, distance, stepsize=0.1):
     stepsize : float
         How large each step should be (as a propotion of ``std``).
     Returns:
-        The end generated deformation field (Batch, height, width)
+        The end generated deformation field (Batch, depth, height, width)
 
     Notes
     -----
@@ -221,18 +249,9 @@ def random_deformation_momentum(shape, std, distance, stepsize=0.1):
     .. math::
         \frac{distance}{std * stepsize}
     """
-    grid_x, grid_y = array_ops.meshgrid(math_ops.range(shape[2]),
-                                        math_ops.range(shape[1]))
-    grid_x = tf.cast(grid_x[None, ..., None], 'float32')
-    grid_y = tf.cast(grid_y[None, ..., None], 'float32')
-
-    base_coordinates = tf.concat([grid_y, grid_x], axis=-1)
+    base_coordinates, mask  = init(shape[1:])
     base_coordinates = tf.repeat(base_coordinates, shape[0], axis=0)
     coordinates = tf.identity(base_coordinates)
-
-    # Create mask to stop movement at edges
-    mask = (tf.cos((grid_x - shape[2] / 2 + 1) * np.pi / (shape[2] + 2)) *
-            tf.cos((grid_y - shape[1] / 2 + 1) * np.pi / (shape[1] + 2))) ** (0.25)
 
     # Total distance is given by std * n_steps * dt, we use this
     # to work out the exact numbers.
@@ -243,7 +262,7 @@ def random_deformation_momentum(shape, std, distance, stepsize=0.1):
     C = np.sqrt(2 * np.pi) * std ** 2
 
     # Multiply by dt here to keep values small-ish for numerical purposes
-    momenta = dt * C * tf.random.normal(shape=[*shape, 2])
+    momenta = dt * C * tf.random.normal(shape=[*shape, 3])
 
     # Using a while loop, generate the deformation step-by-step.
     def cond(i, from_coordinates, momenta):
@@ -255,7 +274,6 @@ def random_deformation_momentum(shape, std, distance, stepsize=0.1):
         d1 = matmul_transposed(jacobian(momenta), v)
         d2 = matmul(jacobian(v), momenta)
         d3 = div(v) * momenta
-
         momenta = momenta - dt * (d1 + d2 + d3)
         v = dense_image_warp(v, from_coordinates - base_coordinates)
         from_coordinates = dense_image_warp(from_coordinates, v)
@@ -270,14 +288,13 @@ def random_deformation_momentum(shape, std, distance, stepsize=0.1):
 
     return from_total_offset
 
-
 def random_deformation_linear(shape, std, distance):
     r"""Create a random deformation.
 
     Parameters
     ----------
-    shape : sequence of 3 ints
-        Batch, height and width.
+    shape : sequence of 4 ints
+        Batch, depth, height and width.
     std : float
         Correlation distance for the linear deformations.
     distance : float
@@ -288,20 +305,12 @@ def random_deformation_linear(shape, std, distance):
     ``distance`` must be significantly smaller than ``std`` to guarantee that
     the deformation is smooth.
     """
-    grid_x, grid_y = array_ops.meshgrid(math_ops.range(shape[2]),
-                                        math_ops.range(shape[1]))
-    grid_x = tf.cast(grid_x[None, ..., None], 'float32')
-    grid_y = tf.cast(grid_y[None, ..., None], 'float32')
-
-    # Create mask to stop movement at edges
-    mask = (tf.cos((grid_x - shape[2] / 2 + 1) * np.pi / (shape[2] + 2)) *
-            tf.cos((grid_y - shape[1] / 2 + 1) * np.pi / (shape[1] + 2))) ** (0.25)
-
+    _, mask = init(shape[1:])
     # Scale to get std 1 after smoothing
     C = np.sqrt(2 * np.pi) * std
 
     # Multiply by dt here to keep values small-ish for numerical purposes
-    momenta = distance * C * tf.random.normal(shape=[*shape, 2])
+    momenta = distance * C * tf.random.normal(shape=[*shape, 3])
     v = mask * gausssmooth(momenta, std)
 
     return v

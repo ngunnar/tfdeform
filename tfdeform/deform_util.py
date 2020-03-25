@@ -37,26 +37,26 @@ def _interpolate_bilinear(grid,
   with ops.name_scope(name):
     grid = ops.convert_to_tensor(grid)
     query_points = ops.convert_to_tensor(query_points)
-    shape = grid.get_shape().as_list()
+    shape = grid.shape
     if len(shape) != 4:
       msg = 'Grid must be 4 dimensional. Received size: '
-      raise ValueError(msg + str(grid.get_shape()))
+      raise ValueError(msg + str(grid.shape))
 
     batch_size, height, width, channels = shape
     query_type = query_points.dtype
     grid_type = grid.dtype
 
-    if (len(query_points.get_shape()) != 3 or
-        query_points.get_shape()[2].value != 2):
+    if (len(query_points.shape) != 3 or
+        query_points.shape[2] != 2):
       msg = ('Query points must be 3 dimensional and size 2 in dim 2. Received '
              'size: ')
-      raise ValueError(msg + str(query_points.get_shape()))
+      raise ValueError(msg + str(query_points.shape))
 
-    _, num_queries, _ = query_points.get_shape().as_list()
+    _, num_queries, _ = query_points.shape
 
     if height < 2 or width < 2:
       msg = 'Grid must be at least batch_size x 2 x 2 in size. Received size: '
-      raise ValueError(msg + str(grid.get_shape()))
+      raise ValueError(msg + str(grid.shape))
 
     alphas = []
     floors = []
@@ -157,7 +157,7 @@ def dense_image_warp(image, flow, name='dense_image_warp'):
                 of dimensions.
   """
   with ops.name_scope(name):
-    batch_size, height, width, channels = image.get_shape().as_list()
+    batch_size, height, width, channels = image.shape
     # The flow is defined on the image grid. Turn the flow into a list of query
     # points in the grid space.
     grid_x, grid_y = array_ops.meshgrid(

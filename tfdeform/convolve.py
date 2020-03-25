@@ -20,9 +20,9 @@ def fftconv(in1, in2, mode="full"):
     shape = s1 + s2 - 1
 
     # Compute convolution in fourier space
-    sp1 = tf.spectral.rfft2d(in1, shape)
-    sp2 = tf.spectral.rfft2d(in2, shape)
-    ret = tf.spectral.irfft2d(sp1 * sp2, shape)
+    sp1 = tf.signal.rfft2d(in1, shape)
+    sp2 = tf.signal.rfft2d(in2, shape)
+    ret = tf.signal.irfft2d(sp1 * sp2, shape)
 
     # Crop according to mode
     if mode == "full":
