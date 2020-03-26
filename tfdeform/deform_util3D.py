@@ -161,7 +161,7 @@ def dense_image_warp(image, flow, name='dense_image_warp'):
     
         batched_grid = tf.expand_dims(stacked_grid, axis=0)
         query_points_on_grid = batched_grid - flow
-        query_points_flattened = tf.reshape(query_points_on_grid, [batch_size, depth * height * width, channels])
+        query_points_flattened = tf.reshape(query_points_on_grid, [batch_size, depth * height * width, 3])
         # Compute values at the query points, then reshape the result back to the
         # image grid.    
         interpolated = _interpolate_trilinear(image, query_points_flattened)

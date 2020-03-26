@@ -11,12 +11,12 @@ from setuptools import setup, find_packages
 
 setup(
     name='tfdeform',
-    version='0.1.0',
+    version='0.2.0',
     url='https://github.com/adler-j/tfdeform',
 
     author='Jonas Adler',
     author_email='jonasadl@kth.se',
 
-    packages=find_packages(exclude=['*test*']),
+    packages=find_packages(exclude=['*test*'])
     package_dir={'tfdeform': 'tfdeform'}
 )
