@@ -106,19 +106,23 @@ def batch_random_deformation_momentum_sequence(shape, std, distance, stepsize=0.
     """
     batch_size = shape[0]
     i = tf.constant(0, dtype=tf.int32)
-    flows = random_deformation_momentum_sequence(shape[1:], std, distance, stepsize)[None,...]
-    def cond(i, flows):
+    u0i, uji = random_deformation_momentum_sequence(shape[1:], std, distance, stepsize)
+    def cond(i, u0i, uji):
         return i < batch_size - 1
 
-    def body(i, flows):
-        flow = random_deformation_momentum_sequence(shape[1:], std, distance, stepsize)[None,...]
-        flows = tf.concat([flows, flow], axis=0)
-        return i + 1, flows
+    def body(i, u0i, uji):
+        u1, u2 = random_deformation_momentum_sequence(shape[1:], std, distance, stepsize)
+        u0i = tf.concat([u0i, u1[None,...]], axis=0)
+        uji = tf.concat([uji, u2[None,...]], axis=0)
+        print(i, u0i.shape, uji.shape)
+        return i + 1, u0i, uji
     
-    i, flows = tf.while_loop(
-        cond, body, [i, flows],
-        shape_invariants=[0,tf.TensorShape([batch_size, None, *shape[1:], 3])])
-    return flows
+    i, u0i, uji = tf.while_loop(
+        cond, body, [i, u0i[None,...], uji[None,...]],
+        shape_invariants=[0,
+                          tf.TensorShape([batch_size, None, *shape[1:], 2]),
+                          tf.TensorShape([batch_size, None, *shape[1:], 2])])
+    return u0i, uji
 
 def random_deformation_momentum_sequence(shape, std, distance, stepsize=0.1):
     r"""Create a sequence of random diffeomorphic deformations.
@@ -155,8 +159,8 @@ def random_deformation_momentum_sequence(shape, std, distance, stepsize=0.1):
     coordinates = tf.identity(base_coordinates)
 
     # Create mask to stop movement at edges
-    mask = (tf.cos((grid_x - shape[2] / 2 + 1) * np.pi / (shape[2] + 2)) *
-            tf.cos((grid_y - shape[1] / 2 + 1) * np.pi / (shape[1] + 2))) ** (0.25)
+    mask = (tf.cos((grid_x - shape[1] / 2 + 1) * np.pi / (shape[1] + 2)) *
+            tf.cos((grid_y - shape[0] / 2 + 1) * np.pi / (shape[0] + 2))) ** (0.25)
 
     # Total distance is given by std * n_steps * dt, we use this
     # to work out the exact numbers.
@@ -167,7 +171,7 @@ def random_deformation_momentum_sequence(shape, std, distance, stepsize=0.1):
     C = np.sqrt(2 * np.pi) * std ** 2
 
     # Multiply by dt here to keep values small-ish for numerical purposes
-    momenta = dt * C * tf.random.normal(shape=[*shape, 2])
+    momenta = dt * C * tf.random.normal(shape=[1, *shape, 2])
 
     # Using a while loop, generate the deformation step-by-step.
     def cond(i, from_coordinates, momenta):
@@ -181,19 +185,23 @@ def random_deformation_momentum_sequence(shape, std, distance, stepsize=0.1):
         d3 = div(v) * momenta
         f_c = from_coordinates[-1,...][None,...]
         momenta = momenta - dt * (d1 + d2 + d3)
+        
         v = dense_image_warp(v, f_c - base_coordinates)
         f_c = dense_image_warp(f_c, v)
+        
         from_coordinates = tf.concat([from_coordinates, f_c], axis=0)
         return i + 1, from_coordinates, momenta
 
     i = tf.constant(0, dtype=tf.int32)
     i, from_coordinates, momenta = tf.while_loop(
         cond, body, [i, coordinates, momenta],
-		shape_invariants=[0,tf.TensorShape([None,shape[1], shape[2], 2]),0])
+        shape_invariants=[0,
+                          tf.TensorShape([None,shape[0], shape[1], 2]),
+                          0])
 
     from_total_offset = from_coordinates - base_coordinates
-
-    return from_total_offset
+    from_total_diff = np.diff(np.concatenate([base_coordinates, from_coordinates], axis=0), axis=0)
+    return from_total_offset, from_total_diff
 
 def random_deformation_momentum(shape, std, distance, stepsize=0.1):
     r"""Create a random diffeomorphic deformation.
